@@ -1,0 +1,461 @@
+---
+title: "Analyse de la Densité d'étangs - Maîtrise en biologie"
+author: "Claudie Bouffard" 
+format:
+  html:
+    embed-resources: true
+toc: true 
+editor: visual
+---
+
+## Glossaire
+
+### Liste de type de traitements:
+
+-   **PEH :** Plantation de peuplier hybrides sur monticule (entre 1 à 5 ans). Les arbres sont trop jeunes pour avoir un effet sur l'hydrologie par evapotranspiration. Canopée particulièrement ouverte car les arbres sont petits.
+
+-   **CPPTM :** Coupe avec Protection des Petites Tiges Marchandes. Similaire à la coupe totale mais certains jeunes arbres sont laissés sur place. Ceux-ci ont tendance à tomber avec le vent. Sur les terres de DOMTAR, cette pratique est majoritairement dans des peuplements résineux mais a été vu dans du feuillus
+
+-   **CJ :** Coupe de Jardinage. Coupe qui imite le régime de trouée naturel des forêts de feuillus matures. Cela n'empêche la dégradation du sol par les ornières de machinerie. La canopée reste fermée.
+
+-   **NAT:** Étangs vernaux sélectionnées dans des milieux protégés depuis au moins 70 ans. Celui-ci représente le contrôle pour mon étude.
+
+## AVRIL: Est-ce que la densité d’étang/ha varie entre les traitements ?
+
+**1.1 Préparation des données :**
+
+```{r}
+#| warning: false
+setwd('C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees')
+library(readxl)
+
+df <-read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Data_base_densite.xlsx", sheet = 1)
+df$Coupe <- as.factor(df$Coupe)
+df$nb_etang_total <- as.numeric(df$nb_etang_total)
+df <- df[-8, ]
+df
+
+den_a <- df[, c(2, 3)]
+den_a
+table(df$nb_etang_total)
+```
+
+\*Note: ici, le décompte n'est pas ''étangs/ha'' puisque cette base de donnée était difficilement ajustable à un modèle. Ainsi, un décompte brut a été utilisé pour cette analyse. Le décompte brut a été effectué dans des transects de 200m2.
+
+**1.2 Choix de l'analyse**
+
+```{r}
+mod1 <- aov(den_a$nb_etang_total ~ den_a$Coupe)
+shapiro.test(residuals(mod1))
+```
+
+Le résultat est significatif ! Les données ne sont pas du tout normales
+
+```{r}
+#| warning: false
+library(car)
+leveneTest(den_a$nb_etang_total ~ den_a$Coupe)
+```
+
+Aussi significatif ! Les données ne sont pas homogène non plus
+
+```{r}
+mod2 <- glm(den_a$nb_etang_total ~ den_a$Coupe,family = poisson(link = "log"))
+dis <- sum(residuals(mod2, type = "pearson")^2) / df.residual(mod2)
+dis
+```
+
+la dispersion est plus de 2, c'est trop élevé! Un GLM Poisson est innaproprié ici.
+
+Avec ces limitations, va falloir procéder avec un modèle binomial négatif.
+
+```{r}
+library(MASS)
+mod3 <- glm.nb(den_a$nb_etang_total ~ den_a$Coupe) 
+```
+
+Il est préférable de faire un test DHARMa pour s'assurer que ce modèle est bien fiable avant de continuer avec l'interprétation.
+
+```{r}
+#| warning: false
+library(DHARMa)
+mod3 <- glm.nb(den_a$nb_etang_total ~ den_a$Coupe)
+sim <- simulateResiduals(mod3)
+plot(sim)
+testDispersion(sim) #ok
+testZeroInflation(sim) #ok
+testOutliers(sim) #ok
+```
+
+Les résultats sont beau, on peut continuer l'analyse
+
+**1.3 Analyse : Modèle Binomial négatif**
+
+```{r}
+#| warning: false
+mod3 <- glm.nb(den_a$nb_etang_total ~ den_a$Coupe) 
+anova(mod3, test = "Chisq")
+```
+
+C'est significatif, au moins un traitement sylvicole a une densité d'étang qui diffère des autres.
+
+**1.4 Post-Hoc : Emmeans**
+
+```{r}
+#| warning: false
+library(emmeans)
+emmeans(mod3, pairwise ~ Coupe, adjust = "tukey")
+```
+
+Chaque densité diffère des autres sauf celle entre CJ et CPPTM
+
+**1.5 Visualisation**
+
+Présentement mes données sont en ''densité/200m2''. Pour être plus propre, je vais transformer cela en ''densité/ha''.
+
+```{r}
+den_a$densite_ha <- den_a$nb_etang_total * 50 #ça transforme en ''etang/ha''
+```
+
+Et on est prêt pour la visualisation:
+
+```{r}
+den_a$Coupe <- factor(den_a$Coupe, levels = c("NAT", "CJ", "CPPTM", "PEH"))
+
+boxplot(den_a$densite_ha ~ den_a$Coupe,ylab = "densité d'étang/ha", xlab = "Traitements sylvicoles",ylim=c(0,2300))
+text(x = 1, y = 600, labels = "c", cex = 1.3)   # NAT
+text(x = 2, y = 710, labels = "a", cex = 1.3)  # CJ
+text(x = 3, y = 1100, labels = "a", cex = 1.3)   # CPPTM
+text(x = 4, y = 2150, labels = "b", cex = 1.3)  # PEH
+```
+
++:---------------------------------:+:---------------------------------:+
+| n NAT = 20\                       | n CPPTM = 26\                     |
+| n CJ = 20                         | n PEH = 20                        |
++-----------------------------------+-----------------------------------+
+
+C'est clair, les PEH peuvent avoir beaucoup plus d'étangs que les autre types de traitements sylvicoles. Essayons de pousser cela plus loin!
+
+**2.1 Pousser plus loin: Ratios**
+
+J'ai demandé à ChatGPT de me faire un code qui montre combien de fois que la densité d'étangs dans le traitement PEH est plus élevée comparé aux autres:
+
+```{r}
+emm2 <- emmeans(mod3, ~ Coupe)
+contrast(emm2,method = list("PEH vs autres" = c(-1/3, -1/3, -1/3, 1)),type = "response")
+```
+
+Le ratio de 6.24 signifie que PEH a une densité environ 6.24x plus élevée que les autres traitements.
+
+Avec cet autre calcul et code par ChatGPT on obtient autre choses intéressant.
+
+```{r}
+Pour_log <- emmeans(mod3, ~ Coupe)
+Pour <- summary(pairs(Pour_log, type="response", adjust="tukey"))
+Pour$percent_change <- (Pour$ratio - 1) * 100
+Pour
+```
+
+Plus d'autres calculs également apporté par ChatGPT:
+
+![](images/Screenshot%202026-07-06%20170036.png){width="369"}
+
+On peut estimer que la densité d'étangs dans PEH est environ 14x plus élevé comparé que la densité d'étangs dans NAT.
+
+## MAI: Est-ce que la densité d’étang/ha varie entre les traitements ?
+
+Pour s'assurer que le pattern observé en avril se maintiens à travers le temps, voyons voir si les données prises en fin-mai/juin sont les mêmes.
+
+**1.1 Préparation des données :**
+
+```{r}
+df4 <-read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Data_base_densite.xlsx", sheet = 4)
+df4$Coupe <- as.factor(df4$Coupe)
+df4$nb_etang_total <- as.numeric(df4$nb_etang_total)
+df4 <- df4[-8, ]
+df4
+
+den_m <- df4[, c(2, 3)]
+den_m$nb_etang_total[is.na(den_m$nb_etang_total)] <- 0
+den_m
+```
+
+**1.2 Choix de l'analyse :**
+
+```{r}
+table(den_m$Coupe)
+tapply(den_m$nb_etang_total,den_m$Coupe,summary)
+```
+
+Pour NAT, on a une séparation complète puisque ce n'est que des zéros.
+
+```{r}
+mod5 <- aov(den_m$nb_etang_total ~ den_m$Coupe)
+shapiro.test(residuals(mod5))
+```
+
+Aussi les données ne sont pas normales
+
+```{r}
+leveneTest(den_m$nb_etang_total ~ den_m$Coupe)
+```
+
+Ce n'est pas homogène
+
+```{r}
+mod5_2 <- glm(den_m$nb_etang_total ~ den_m$Coupe,family = poisson(link = "log"))
+dis <- sum(residuals(mod5_2, type = "pearson")^2) / df.residual(mod5_2)
+dis
+```
+
+Un GLM Poisson ne fonctionnerait pas non plus ici, il y a trop de dispersion.\
+Encore une fois, on va essayer un modèle binomial négatif.
+
+```{r}
+mod6 <- glm.nb(den_m$nb_etang_total ~ den_m$Coupe)
+summary(mod6)
+sim2 <- simulateResiduals(mod6)
+plot(sim2) #majoritairement super bon
+testDispersion(sim2) #Presque ok mais pas parfait
+testZeroInflation(sim2) #ok
+testOutliers(sim2) #ok
+```
+
+Ici, le modèle est presque parfait mais la dispersion est un peu problématique ce qui est probablement causé par la séparation de NAT. Par contre, puisque tout le reste est bon, on va continuer. Il faura toutefois eviter un post-hoc avec emmeans car cela donnera des résultats non fiable à cause de la séparation de NAT.
+
+**1.3 Analyse :** **Modèle Binomial négatif**
+
+```{r}
+anova(mod6, test = "Chisq")
+```
+
+C'est significatif, au moins un traitement sylvicole a une densité d'étang qui diffère des autres.
+
+**1.4 Post-Hoc: Test du rapport de vraisemblance ''à la main'' + Wilcoxon**
+
+NAT cause problème, alors faire des test par pair un à un va éviter d'obtenir des résultats non fiables. Le rapport de vraisemblence sera effectué à l'aide d'une fonction créée par ChatGPT. Par contre, tout les paires qui on NAT seron comparés avec le test de Wilcoxon pour tout de même comparer la densité d'étangs des deux traitements sylvicoles en évitant de se relier sur la variabilité inexistante dans NAT. Une fois chaque p-value obtenue, la correction de Holm sera appliqué:
+
+```{r}
+# Fonction pour comparer deux traitements
+comparaison_NB <- function(data, groupe1, groupe2){
+  
+  # garder seulement les deux groupes
+  df <- subset(data, Coupe %in% c(groupe1, groupe2))
+  
+  # remettre le facteur à zéro
+  df$Coupe <- droplevels(df$Coupe)
+  
+  # modèle avec traitement
+  mod_complet <- glm.nb(nb_etang_total ~ Coupe, data = df)
+  
+  # modèle sans traitement
+  mod_nul <- glm.nb(nb_etang_total ~ 1, data = df)
+  
+  # test du rapport de vraisemblance
+  resultat <- anova(mod_nul, mod_complet, test = "Chisq")
+  
+  return(resultat)
+}
+
+# Comparaisons
+#Notes, puisque NAT a une séparation complète, un test de wilcox est plus approprié
+
+comparaison_NB(den_m, "CJ", "CPPTM") #0.2339578
+wilcox.test(nb_etang_total ~ Coupe,data = subset(den_m, Coupe %in% c("CJ","NAT")),exact = FALSE)
+                                     #3.257e-06
+comparaison_NB(den_m, "CJ", "PEH")   #3.720458e-08
+wilcox.test(nb_etang_total ~ Coupe,data = subset(den_m, Coupe %in% c("CPPTM","NAT")),exact = FALSE)
+                                     #2.033e-05
+comparaison_NB(den_m, "CPPTM", "PEH")#0.000294576
+wilcox.test(nb_etang_total ~ Coupe,data = subset(den_m, Coupe %in% c("NAT","PEH")),exact = FALSE)
+                                     #2.976e-08
+#correction:
+p.adjust(c(0.2339578,3.257e-06,3.720458e-08,2.033e-05,0.000294576,2.976e-08), method = "holm")
+
+#RÉSULTATS
+
+#CJ-CPPTM:0.2339578
+#CJ-NAT: 1.302800e-05
+#CJ-PEH: 1.860229e-07
+#CPPTM-NAT: 6.099000e-05
+#CPPTM-PEH:5.891520e-04
+#NAT-PEH:1.785600e-07
+```
+
+Ici, c'est seulement CJ-CPPTM ne diffèrent pas significativement
+
+**1.5 Visualisation**
+
+Tout comme pour le mois d'avril, la densité en étang est transformée pour que ce soit ''étangs/ha''
+
+```{r}
+den_m$densite_ha <- den_m$nb_etang_total * 50 #ça transforme en ''etang/ha''
+den_m$Coupe <- factor(den_m$Coupe, levels = c("NAT", "CJ", "CPPTM", "PEH"))
+
+boxplot(den_m$densite_ha ~ den_m$Coupe,ylab = "densité d'étang/ha", xlab = "Traitements sylvicoles",ylim=c(0,2300))
+text(x = 1, y = 300, labels = "c", cex = 1.3)   # NAT
+text(x = 2, y = 710, labels = "a", cex = 1.3)  # CJ
+text(x = 3, y = 1700, labels = "a", cex = 1.3)   # CPPTM
+text(x = 4, y = 1700, labels = "b", cex = 1.3)  # PEH
+```
+
++:---------------------------------:+:---------------------------------:+
+| n NAT = 20\                       | n CPPTM = 26\                     |
+| n CJ = 20                         | n PEH = 20                        |
++-----------------------------------+-----------------------------------+
+
+**2.1** **Pousser plus loin: Ratios**
+
+Puisque la séparation causée par NAT rend tout ratio utilisant NAT impossible (on ne peux pas diviser zéro), on ne peux pas pousser les analyses plus loin comme je l'ai fait avec les données du mois d'avril. Il faut donc laisser tomber cet aspect.
+
+## La densité d’étangs diminue-t-elle significativement entre avril et mai, toutes coupes confondues ?
+
+Il semble y avoir une différence entre avril et mai: la densité d'étangs dans la majorité des traitements silvicoles semble diminuer. Toutefois, c'est mieux de confirmer cela statistiquement. Donc, toute coupes confondues, est-ce qu'on voit vraiment une diminution dans le temps?
+
+1.  **Préparation des données :**
+
+    Ici, faut faire une base de donnée sans coupe précises mais on garde chaque transects
+
+    ```{r}
+    #| warning: false
+    library(dplyr)
+    avril <-read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 1)
+    avril <- avril %>% rename(a_etang_total = etang_total)
+    avril
+    mai <- read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 2)
+    mai <- mai %>% rename(m_etang_total = etang_total)
+    mai
+
+    df3 <- avril %>% dplyr::select(Transect, a_etang_total) %>% 
+      dplyr::left_join(mai %>% dplyr::select(Transect, m_etang_total),by = "Transect")
+    df3
+    ```
+
+2.  Choix de l'analyse
+
+    Pour répondre à la question il faut prendre en concidération qu'on va comparer des données dépendantes puisque les étangs ont été comptés sur les mêmes transectes, juste à des moments différents (avril et mai). Ceci limite le type de test que l'on peut effectuer
+
+    ```{r}
+    dif <- df3$a_etang_total - df3$m_etang_total
+    shapiro.test(dif)
+    ```
+
+    De plus les données ne sont pas du tout normales.
+
+    ```{r}
+    boxplot(dif, horizontal = TRUE) 
+    abline(v = 0, lty = 2)
+    ```
+
+    Et ici, le graphique démontre qu'il semblerait effectivement avoir plus d'étangs en avril puisque la majorité des données se trouvent à la droite du 0. Une analyse de Wilcoxon permet de prendre en compte toutes ces composantes.
+
+3.  Analyse
+
+    ```{r}
+    wilcox.test(df3$a_etang_total, df3$m_etang_total, paired = TRUE,alternative = "greater")
+    ```
+
+    Très significatif, il y a clairement plus d'étangs en avril qu'en mai!
+
+4.  Visualisation
+
+    ```{r}
+    library(ggplot2)
+    avril2 <- read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 1)
+    avril2$Temps <- 'Avril'
+
+
+    mai2 <- read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 2)
+    mai2$Temps <- 'Mai'
+
+    pertes <- read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 3)
+    pertes
+
+    df2 <- rbind(avril2, mai2)
+    df2$Temps <- factor(df2$Temps)
+    df2$Coupe <- factor(df2$Coupe)
+    df2$Transect <- factor(df2$Transect)
+    pertes$trend <- ifelse(pertes$Pertes > 0, "Perte",ifelse(pertes$Pertes < 0, "Gain", "Stable"))
+    df2 <- merge(df2, pertes[, c("Transect", "trend")], by = "Transect")
+    df2
+           #Plot
+    ggplot(df2, aes(x = Temps, y = etang_total, group = Transect, colour = trend)) +
+      geom_line(alpha = 0.3) +
+      geom_point(size = 2) +
+      scale_colour_manual(values = c("Gain" = "green","Perte" = "red","Stable" = "grey50")) +
+      theme_classic()+ 
+      labs(x = "Période de la prise de données",y = "Densité d’étangs/ha")+
+      labs(colour = "Changement de densité\nentre avril et mai")
+    ```
+
+    +:---------------------------------:+:---------------------------------:+
+    | n NAT = 20\                       | n CPPTM = 26\                     |
+    | n CJ = 20                         | n PEH = 20                        |
+    +-----------------------------------+-----------------------------------+
+
+5.  Conclusion
+
+    Oui, il y a moins d'étangs en avril qu'en mai, c'est confirmé. Par contre, pour que cette information soit intéressante, il faut pousser plus loin. Ainsi, la prochaine question est complémente celle-ci.
+
+## La perte d’étangs entre avril et mai diffère-t-elle selon le traitement ? 
+
+1.  Préparation des données :
+
+    Pour répondre à cette question, une nouvelle base de donnée a été crée.
+
+    ```{r}
+    pertes <- read_excel("C:/Users/super/Université du Québec en Outaouais/CLAUDIE ÉTANGS VERNAUX - Documents/Stats/Densité_depression/Bases_de_donnees/Data_base_avril.xlsx", sheet = 3)
+    pertes
+    ```
+
+2.  Choix de l'analyse
+
+    Ici on a des données qui découlent de mesures répétées sur le même transect avec des valeurs positives, négatives et nules (zéro). Le teste de Kruskal-Wallis fonctionne dans cette situation
+
+3.  Analyse
+
+    ```{r}
+    kruskal.test(pertes$Pertes ~ pertes$Coupe)
+    ```
+
+    Ici, le résultat est non significatif. Nous n'avons alors pas besoin de faire de post-hoc. Il n'y a pas de différence significative entre les traitements.
+
+4.  Visualisation
+
+    ```{r}
+    boxplot(Pertes ~ Coupe, data = pertes,
+            ylab = "Changement de la densité d'étangs/ha (Avril – Mai)",
+            xlab = 'Traitements sylvicoles')
+    abline(h = 0, lty = 2)
+    ```
+
+    +:---------------------------------:+:---------------------------------:+
+    | n NAT = 20\                       | n CPPTM = 26\                     |
+    | n CJ = 20                         | n PEH = 20                        |
+    +-----------------------------------+-----------------------------------+
+
+5.  Conclusion
+
+    Bien qu'il a été confirmé qu'il y a une perte significative d'étangs entre avril et mai, le type de traitement ne semble pas affecter significativement le nombre d'étangs perdu dans le temps.
+
+## Pourcentage de colonisation des étangs
+
+En mai, le nombre d'étangs total a été compilé pour chaque traitement. Parmis ces étangs, chaque étang qui était colonisé par les amphibiens (présence d'oeufs) ont été comptés.
+
+| Traitement   | Nb d'étangs compté | \% d'étang colonisé |
+|--------------|--------------------|---------------------|
+| PEH (n=20)   | 393                | 9.86%               |
+| CPPTM (n=26) | 131                | 10.17%              |
+| CJ (n=20)    | 85                 | 15.79%              |
+| NAT (n=20)   | 28                 | 0.00%               |
+
+Un autre tableau a été effectué pour voir le pourcentage d'espèce présente dans chaque étang colonisé selon le traitement.
+
+| Traitement   | LISY    | Ambystome | LICL (compétition) |
+|--------------|---------|-----------|--------------------|
+| PEH (n=20)   | 60.00%  | 5.71%     | 17.14%             |
+| CPPTM (n=26) | 100.00% | 8.33%     | 25.00%             |
+| CJ (n=20)    | 22.11%  | 100.00%   | 0.00%              |
+| NAT (n=20)   | 0.00%   | 0.00%     | 0.00%              |
+
+À voir si c'est significatif...
